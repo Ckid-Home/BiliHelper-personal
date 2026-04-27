@@ -156,6 +156,15 @@ trait CommonTaskInfo
             return false;
         }
 
+        $susWinResponse = $this->vipPointDeliverTaskApi()->susWin();
+        $this->assertVipPointAuthFailure($susWinResponse, "大会员积分@{$name}: {$task_code} 任务预热时账号未登录");
+        if ($susWinResponse['code']) {
+            $this->warning("大会员积分@{$name}: {$task_code} 任务预热失败 " . json_encode($susWinResponse, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return false;
+        }
+        usleep(mt_rand(1000, 2000) * 1000);
+
         $response = $this->vipPointDeliverTaskApi()->complete($channel);
         $this->assertVipPointAuthFailure($response, "大会员积分@{$name}: {$task_code} 任务执行时账号未登录");
         if ($response['code']) {
