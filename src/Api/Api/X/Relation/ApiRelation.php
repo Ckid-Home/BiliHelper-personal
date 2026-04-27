@@ -170,6 +170,22 @@ class ApiRelation extends AbstractApiClient
     }
 
     /**
+     * x/web-interface/relation 的实时返回里，当前用户对目标用户的关系在 data.relation.attribute。
+     * data.be_relation.attribute 表示目标用户对当前用户的关系。
+     *
+     * @param array<string, mixed> $response
+     */
+    public static function extractCurrentUserRelationAttribute(array $response): ?int
+    {
+        $attribute = $response['data']['relation']['attribute'] ?? null;
+        if (!is_numeric($attribute)) {
+            return null;
+        }
+
+        return (int)$attribute;
+    }
+
+    /**
      * @param int $uid
      * @param int $act
      * @param int $source
