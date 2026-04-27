@@ -10,8 +10,16 @@ class ApiTask extends AbstractApiClient
     /**
      * @var array<string, string>
      */
-    private const HEADERS = [
+    private const PC_HEADERS = [
         'Referer' => 'https://big.bilibili.com/mobile/bigPoint?navhide=1&closable=1',
+    ];
+
+    /**
+     * @var array<string, string>
+     */
+    private const APP_HEADERS = [
+        'Referer' => 'https://big.bilibili.com/mobile/bigPoint/task',
+        'navtive_api_from' => 'h5',
     ];
 
     /**
@@ -31,7 +39,7 @@ class ApiTask extends AbstractApiClient
     {
         return $this->decodePost('pc', 'https://api.bilibili.com/pgc/activity/score/task/sign2', [
             'csrf' => $this->request()->csrfValue(),
-        ], self::HEADERS, 'pgc.score.sign');
+        ], self::PC_HEADERS, 'pgc.score.sign');
     }
 
     /**
@@ -39,10 +47,11 @@ class ApiTask extends AbstractApiClient
      */
     public function receive(string $taskCode): array
     {
-        return $this->decodePost('pc', 'https://api.bilibili.com/pgc/activity/score/task/receive/v2', [
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/score/task/receive/v2', $this->request()->signCommonPayload([
             'taskCode' => $taskCode,
             'csrf' => $this->request()->csrfValue(),
-        ], self::HEADERS, 'pgc.score.receive');
+            'ts' => time(),
+        ], true), self::APP_HEADERS, 'pgc.score.receive');
     }
 
     /**
@@ -50,9 +59,9 @@ class ApiTask extends AbstractApiClient
      */
     public function complete(string $taskCode): array
     {
-        return $this->decodePost('pc', 'https://api.bilibili.com/pgc/activity/score/task/complete/v2', [
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/score/task/complete/v2', $this->request()->signCommonPayload([
             'taskCode' => $taskCode,
             'csrf' => $this->request()->csrfValue(),
-        ], self::HEADERS, 'pgc.score.complete');
+        ], true), self::APP_HEADERS, 'pgc.score.complete');
     }
 }

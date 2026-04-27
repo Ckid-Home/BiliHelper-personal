@@ -39,6 +39,16 @@ class ApiTask extends AbstractApiClient
     /**
      * @return array<string, mixed>
      */
+    public function susWin(): array
+    {
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/susWin/receive', $this->request()->signCommonPayload([
+            'csrf' => $this->request()->csrfValue(),
+        ], true), self::HEADERS, 'pgc.deliver.suswin.receive');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function materialReceive(string $epId, string $seasonId): array
     {
         return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/material/receive', $this->request()->signCommonPayload([
