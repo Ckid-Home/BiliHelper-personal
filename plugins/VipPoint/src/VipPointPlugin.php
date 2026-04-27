@@ -29,6 +29,12 @@ use Bhp\Util\Exceptions\NoLoginException;
 
 class VipPointPlugin extends BasePlugin implements PluginTaskInterface
 {
+    /**
+     * 本地临时测试白名单；留空表示全部放行。
+     * @var string[]
+     */
+    private const TEMP_ACTIVE_TASKS = [];
+
     use SignIn;
     use Bonus;
     use Privilege;
@@ -117,7 +123,7 @@ class VipPointPlugin extends BasePlugin implements PluginTaskInterface
             return TaskResult::after(10 * 60);
         }
 
-        foreach ($this->targetTasks as $target => $label) {
+        foreach ($this->activeTargetTasks() as $target => $label) {
             if ($this->getTask($target)) {
                 continue;
             }
@@ -148,6 +154,22 @@ class VipPointPlugin extends BasePlugin implements PluginTaskInterface
     }
 
     /**
+     * @return array<string, string>
+     */
+    protected function activeTargetTasks(): array
+    {
+        if (self::TEMP_ACTIVE_TASKS === []) {
+            return $this->targetTasks;
+        }
+
+        return array_filter(
+            $this->targetTasks,
+            static fn(string $target): bool => in_array($target, self::TEMP_ACTIVE_TASKS, true),
+            ARRAY_FILTER_USE_KEY,
+        );
+    }
+
+    /**
      * 初始化任务
      * @return void
      */
@@ -158,7 +180,7 @@ class VipPointPlugin extends BasePlugin implements PluginTaskInterface
         $this->runtimeState = VipPointRuntimeState::bootstrap(
             is_array($this->tasks) && $this->tasks !== [] ? $this->tasks : $storedTasks,
             $date,
-            $this->targetTasks,
+            $this->activeTargetTasks(),
         );
 
         $tasks = $this->runtimeState->all();
