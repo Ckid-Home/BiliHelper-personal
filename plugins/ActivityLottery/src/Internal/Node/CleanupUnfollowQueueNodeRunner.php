@@ -302,13 +302,11 @@ final class CleanupUnfollowQueueNodeRunner implements NodeRunnerInterface
             return [false, $message !== '' ? $message : '关系查询失败'];
         }
 
-        $attribute = $response['data']['be_relation']['attribute'] ?? null;
-        if (!is_numeric($attribute)) {
-            return [false, '关系查询响应缺少 be_relation.attribute'];
+        $attr = ApiRelation::extractCurrentUserRelationAttribute($response);
+        if (!is_int($attr)) {
+            return [false, '关系查询响应缺少 relation.attribute'];
         }
 
-        // attribute 是枚举值：0=未关注，1=悄悄关注（历史值），2=已关注，6=已互粉，128=已拉黑
-        $attr = (int)$attribute;
         return [ApiRelation::isFollowingAttribute($attr), null];
     }
 
