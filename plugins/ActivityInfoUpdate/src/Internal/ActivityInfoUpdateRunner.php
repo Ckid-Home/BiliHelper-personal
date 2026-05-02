@@ -9,7 +9,24 @@ use RuntimeException;
 
 final class ActivityInfoUpdateRunner
 {
+    private const REFRESH_STATUS_REFRESHED = 'refreshed';
+    private const REFRESH_STATUS_TRANSIENT_FAILURE = 'transient_failure';
+    private const REFRESH_STATUS_EXPIRED = 'expired';
+    private const REFRESH_STATUS_INVALID = 'invalid';
+
     private ?ApiActivity $apiActivity = null;
+    /**
+     * @var callable(string): string
+     */
+    private readonly mixed $pageHtmlFetcher;
+    /**
+     * @var callable(string, string, string): array<string, mixed>
+     */
+    private readonly mixed $lotteryInfoFetcher;
+    /**
+     * @var callable(): int
+     */
+    private readonly mixed $nowResolver;
 
     /**
      * 初始化 ActivityInfoUpdateRunner
@@ -17,7 +34,18 @@ final class ActivityInfoUpdateRunner
      */
     public function __construct(
         private readonly AppContext $appContext,
+        private readonly ?string $resourcePath = null,
+        ?callable $pageHtmlFetcher = null,
+        ?callable $lotteryInfoFetcher = null,
+        ?callable $nowResolver = null,
     ) {
+        $this->pageHtmlFetcher = $pageHtmlFetcher ?? fn (string $url): string => $this->appContext->request()->getText('other', $url);
+        $this->lotteryInfoFetcher = $lotteryInfoFetcher ?? fn (string $lotteryId, string $url, string $title): array => $this->apiActivity()->myTimes([
+            'sid' => $lotteryId,
+            'url' => $url,
+            'title' => $title,
+        ]);
+        $this->nowResolver = $nowResolver ?? static fn (): int => time();
     }
 
     /**
@@ -26,12 +54,17 @@ final class ActivityInfoUpdateRunner
     public function update(?string $filePath = null): array
     {
         $this->assertAuthenticated();
+        $now = $this->now();
         $resourcePath = $this->resourcePath();
         $catalogDocument = $this->loadCatalogDocument($resourcePath);
         $ignoredUrls = $this->loadIgnoredUrls($catalogDocument);
         $existing = $this->loadExistingData($catalogDocument);
         $existingByUrl = $this->indexRecordsByUrl($existing);
         $existingUrls = $this->extractUrlsFromRecords($existing);
+        $ignoredRemovedUrls = array_values(array_filter(
+            $existingUrls,
+            fn (string $url): bool => in_array($url, $ignoredUrls, true),
+        ));
         $fileUrls = $this->loadUrlsFromFile($filePath);
         $mergedUrls = $this->mergeUrls(
             $existingUrls,
@@ -69,13 +102,46 @@ final class ActivityInfoUpdateRunner
         $skipped = 0;
         $refreshedCount = 0;
         $fallbackKeptUrls = [];
+        $expiredRemovedItems = [];
+        $invalidRemovedItems = [];
         $droppedUrls = [];
         foreach ($candidateUrls as $url) {
-            $record = $this->buildRecord($url);
-            if ($record === null) {
-                if (isset($existingByUrl[$url])) {
-                    $records[] = $existingByUrl[$url];
+            $existingRecord = $existingByUrl[$url] ?? null;
+            $refreshResult = $this->buildRecord($url, $now);
+            if ($refreshResult['status'] !== self::REFRESH_STATUS_REFRESHED) {
+                if (
+                    is_array($existingRecord)
+                    && $refreshResult['status'] === self::REFRESH_STATUS_TRANSIENT_FAILURE
+                    && !$this->isExpiredRecord($existingRecord, $now)
+                ) {
+                    $records[] = $existingRecord;
                     $fallbackKeptUrls[] = $url;
+                } elseif (
+                    $refreshResult['status'] === self::REFRESH_STATUS_EXPIRED
+                    || (is_array($existingRecord) && $this->isExpiredRecord($existingRecord, $now))
+                ) {
+                    if (is_array($existingRecord)) {
+                        $expiredReason = $refreshResult['status'] === self::REFRESH_STATUS_EXPIRED
+                            ? ($refreshResult['reason'] !== '' ? $refreshResult['reason'] : '活动时间已结束')
+                            : '缓存记录已过期';
+                        $expiredRemovedItems[] = [
+                            'url' => $url,
+                            'reason' => $expiredReason,
+                        ];
+                    } else {
+                        $droppedUrls[] = $url;
+                    }
+                } elseif ($refreshResult['status'] === self::REFRESH_STATUS_INVALID) {
+                    if (is_array($existingRecord)) {
+                        $invalidRemovedItems[] = [
+                            'url' => $url,
+                            'reason' => $refreshResult['reason'] !== ''
+                                ? $refreshResult['reason']
+                                : '活动信息失效',
+                        ];
+                    } else {
+                        $droppedUrls[] = $url;
+                    }
                 } else {
                     $droppedUrls[] = $url;
                 }
@@ -83,7 +149,7 @@ final class ActivityInfoUpdateRunner
                 continue;
             }
 
-            $records[] = $record;
+            $records[] = $refreshResult['record'];
             $refreshedCount++;
         }
 
@@ -120,6 +186,9 @@ final class ActivityInfoUpdateRunner
         $this->appContext->log()->recordInfo("活动索引: 已更新 {$resourcePath}");
         $this->appContext->log()->recordInfo(
             "活动索引: 抓取完成 成功刷新 {$refreshedCount} 条，失败回退旧记录 " . count($fallbackKeptUrls)
+            . " 条，过期移除 " . count($expiredRemovedItems)
+            . " 条，失效移除 " . count($invalidRemovedItems)
+            . " 条，忽略移除 " . count($ignoredRemovedUrls)
             . " 条，失败丢弃 " . count($droppedUrls) . " 条"
         );
         $this->appContext->log()->recordInfo(
@@ -129,6 +198,9 @@ final class ActivityInfoUpdateRunner
             . " 条"
         );
         $this->logUrlList('活动索引: 回退保留旧记录 URL', $fallbackKeptUrls);
+        $this->logUrlReasonItems('活动索引: 本次过期移除 URL', $expiredRemovedItems);
+        $this->logUrlReasonItems('活动索引: 本次失效移除 URL', $invalidRemovedItems);
+        $this->logUrlList('活动索引: 本次忽略移除 URL', $ignoredRemovedUrls);
         $this->logUrlList('活动索引: 抓取失败未保留 URL', $droppedUrls);
         $this->logUrlItems('活动索引: 本次新增写入 URL', $persistedNewUrls);
         $this->logUrlList('活动索引: 本次移除 URL', $removedExistingUrls);
@@ -159,6 +231,10 @@ final class ActivityInfoUpdateRunner
      */
     private function resourcePath(): string
     {
+        if ($this->resourcePath !== null && trim($this->resourcePath) !== '') {
+            return str_replace('\\', '/', $this->resourcePath);
+        }
+
         $appRoot = rtrim(str_replace('\\', '/', $this->appContext->appRoot()), '/');
 
         return $appRoot . '/resources/plugins/ActivityLottery/catalog.json';
@@ -324,6 +400,23 @@ final class ActivityInfoUpdateRunner
     }
 
     /**
+     * @param array<int, array{url:string, reason:string}> $items
+     */
+    private function logUrlReasonItems(string $prefix, array $items): void
+    {
+        foreach ($items as $item) {
+            $url = trim((string)($item['url'] ?? ''));
+            if ($url === '') {
+                continue;
+            }
+
+            $reason = trim((string)($item['reason'] ?? ''));
+            $suffix = $reason !== '' ? " [原因: {$reason}]" : '';
+            $this->appContext->log()->recordInfo($prefix . ' ' . $url . $suffix);
+        }
+    }
+
+    /**
      * 标准化URL
      * @param string $url
      * @return string
@@ -381,59 +474,101 @@ final class ActivityInfoUpdateRunner
     }
 
     /**
-     * @return array<string, mixed>|null
+     * @return array{status:string,record:?array<string,mixed>,reason:string}
      */
-    private function buildRecord(string $url): ?array
+    private function buildRecord(string $url, int $now): array
     {
         try {
-            $html = $this->appContext->request()->getText('other', $url);
+            $html = ($this->pageHtmlFetcher)($url);
         } catch (\Throwable $throwable) {
             $this->appContext->log()->recordWarning("活动索引: 拉取活动页失败 {$url} -> {$throwable->getMessage()}");
-            return null;
+            return [
+                'status' => self::REFRESH_STATUS_TRANSIENT_FAILURE,
+                'record' => null,
+                'reason' => '活动页拉取失败',
+            ];
         }
 
         $page = (new EraActivityPageParser())->parse($html);
         if ($page === null) {
             $this->appContext->log()->recordWarning("活动索引: 活动页解析失败 {$url}");
-            return null;
+            return [
+                'status' => self::REFRESH_STATUS_TRANSIENT_FAILURE,
+                'record' => null,
+                'reason' => '活动页解析失败',
+            ];
         }
 
         $lotteryId = trim($page->lotteryId);
         if ($lotteryId === '') {
             $this->appContext->log()->recordWarning("活动索引: 活动缺少抽奖ID {$url}");
-            return null;
+            return [
+                'status' => self::REFRESH_STATUS_INVALID,
+                'record' => null,
+                'reason' => '活动缺少抽奖ID',
+            ];
         }
 
-        $response = $this->apiActivity()->myTimes([
-            'sid' => $lotteryId,
-            'url' => $url,
-            'title' => $page->title,
-        ]);
+        $response = ($this->lotteryInfoFetcher)($lotteryId, $url, $page->title);
         (new AuthFailureClassifier())->assertNotAuthFailure($response, "活动索引: 获取{$page->title}抽奖信息时账号未登录");
         if (($response['code'] ?? -1) !== 0 || !is_array($response['data'] ?? null)) {
             $code = $response['code'] ?? 'unknown';
             $message = is_string($response['message'] ?? null) ? $response['message'] : 'unknown';
             $this->appContext->log()->recordWarning("活动索引: 抽奖信息获取失败 {$page->title} {$code} -> {$message}");
-            return null;
+            return [
+                'status' => self::REFRESH_STATUS_TRANSIENT_FAILURE,
+                'record' => null,
+                'reason' => '抽奖信息获取失败',
+            ];
         }
 
         $startTime = (int)($response['data']['stime'] ?? 0);
         $endTime = (int)($response['data']['etime'] ?? 0);
         if ($startTime <= 0 || $endTime <= 0) {
             $this->appContext->log()->recordWarning("活动索引: 活动时间窗口无效 {$page->title}");
-            return null;
+            return [
+                'status' => self::REFRESH_STATUS_INVALID,
+                'record' => null,
+                'reason' => '活动时间窗口无效',
+            ];
+        }
+
+        if ($endTime <= $now) {
+            return [
+                'status' => self::REFRESH_STATUS_EXPIRED,
+                'record' => null,
+                'reason' => '活动时间已结束',
+            ];
         }
 
         return [
-            'title' => trim($page->title),
-            'url' => $url,
-            'page_id' => trim($page->pageId),
-            'activity_id' => trim($page->activityId),
-            'lottery_id' => $lotteryId,
-            'start_time' => $startTime,
-            'end_time' => $endTime,
-            'update_time' => date('Y-m-d H:i:s'),
+            'status' => self::REFRESH_STATUS_REFRESHED,
+            'record' => [
+                'title' => trim($page->title),
+                'url' => $url,
+                'page_id' => trim($page->pageId),
+                'activity_id' => trim($page->activityId),
+                'lottery_id' => $lotteryId,
+                'start_time' => $startTime,
+                'end_time' => $endTime,
+                'update_time' => date('Y-m-d H:i:s', $now),
+            ],
+            'reason' => '',
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $record
+     */
+    private function isExpiredRecord(array $record, int $now): bool
+    {
+        return (int)($record['end_time'] ?? 0) > 0
+            && (int)($record['end_time'] ?? 0) <= $now;
+    }
+
+    private function now(): int
+    {
+        return max(0, (int)($this->nowResolver)());
     }
 
     /**
