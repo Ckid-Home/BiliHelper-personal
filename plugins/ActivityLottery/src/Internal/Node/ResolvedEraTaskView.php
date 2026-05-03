@@ -117,12 +117,13 @@ final class ResolvedEraTaskView
      */
     public function resolvedTaskStatus(): int
     {
+        $pageStatus = max(0, $this->task?->taskStatus() ?? 0);
         $progress = $this->taskProgress();
-        if (isset($progress['task_status']) && is_numeric($progress['task_status'])) {
-            return (int)$progress['task_status'];
-        }
+        $progressStatus = isset($progress['task_status']) && is_numeric($progress['task_status'])
+            ? max(0, (int)$progress['task_status'])
+            : 0;
 
-        return $this->task?->taskStatus() ?? 0;
+        return max($pageStatus, $progressStatus);
     }
 
     /**

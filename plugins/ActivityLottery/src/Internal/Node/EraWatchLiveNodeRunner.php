@@ -55,12 +55,16 @@ final class EraWatchLiveNodeRunner implements NodeRunnerInterface
         $state = $this->pruneState($taskView->taskRuntime(), $now);
         $progress = $taskView->taskProgress();
         $serverWatchSeconds = EraWatchProgress::currentSeconds($task, $progress);
+        $completionThreshold = EraWatchProgress::completionThresholdSeconds($task, $progress);
         $localWatchSeconds = max(max(0, (int)($state['local_watch_seconds'] ?? 0)), $serverWatchSeconds);
         if ($localWatchSeconds > 0) {
             $state['local_watch_seconds'] = $localWatchSeconds;
         }
 
-        if ($taskView->resolvedTaskStatus() === 3) {
+        if (
+            $taskView->resolvedTaskStatus() === 3
+            || ($completionThreshold > 0 && $serverWatchSeconds >= $completionThreshold)
+        ) {
             unset(
                 $state['live_session'],
                 $state['live_failure_count'],

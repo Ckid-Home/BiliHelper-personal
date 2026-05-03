@@ -112,15 +112,27 @@ final class EraWatchProgress
     /**
      * @param array<string, mixed>|null $progress
      */
-    public static function targetSeconds(EraTaskSnapshot $task, ?array $progress = null, ?int $current = null): int
+    public static function completionThresholdSeconds(EraTaskSnapshot $task, ?array $progress = null): int
     {
         $thresholds = self::thresholds($task, $progress);
         if ($thresholds === []) {
             return 0;
         }
 
+        return max($thresholds);
+    }
+
+    /**
+     * @param array<string, mixed>|null $progress
+     */
+    public static function targetSeconds(EraTaskSnapshot $task, ?array $progress = null, ?int $current = null): int
+    {
+        $limit = self::completionThresholdSeconds($task, $progress);
+        if ($limit <= 0) {
+            return 0;
+        }
+
         $current ??= self::currentSeconds($task, $progress);
-        $limit = max($thresholds);
         $target = $limit + self::bufferSeconds($limit);
 
         return $current >= $target ? 0 : $target;
